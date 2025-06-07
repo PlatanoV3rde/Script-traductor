@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import re
 import time
 import requests
@@ -6,9 +7,13 @@ import argparse
 import sys
 
 # ——————————————————————————————
-# Configuración de la API de DeepL
+# Configuración de la API de DeepL (FREE)
 # ——————————————————————————————
-DEEPL_API_KEY = "TU_CLAVE_DEEPL_AQUÍ"  # ← Reemplázala con tu clave
+DEEPL_AUTH_KEY = os.getenv("DEEPL_AUTH_KEY")
+if not DEEPL_AUTH_KEY:
+    print("❌ Error: define la variable de entorno DEEPL_AUTH_KEY con tu API key free de DeepL", file=sys.stderr)
+    sys.exit(1)
+
 DEEPL_API_URL = "https://api-free.deepl.com/v2/translate"
 
 # ——————————————————————————————
@@ -21,33 +26,24 @@ TAG_SPLIT    = re.compile(r"(<[^>]+>)")
 # Funciones auxiliares
 # ——————————————————————————————
 def extract_plain_text(msg: str) -> str:
-    """Quita etiquetas MiniMessage para enviar solo texto plano a DeepL."""
     return re.sub(r"<[^>]+>", "", msg).strip()
 
 def replace_with_translation(original: str, translated: str) -> str:
-    """
-    Reconstruye el valor original, sustituyendo solo el texto plano
-    por su traducción, y dejando intactas todas las etiquetas.
-    """
     parts  = TAG_SPLIT.split(original)
     result = []
     for part in parts:
         if TAG_SPLIT.fullmatch(part):
             result.append(part)
         else:
-            # Si hay texto (no solo espacios), usa la traducción
             result.append(translated if part.strip() else part)
     return "".join(result)
 
 def translate_deepl(text: str, target_lang="ES", max_retries=5) -> str:
-    """
-    Llama a la API de DeepL con reintentos exponenciales ante 429.
-    """
     for attempt in range(max_retries):
         resp = requests.post(
             DEEPL_API_URL,
             data={
-                "auth_key": DEEPL_API_KEY,
+                "auth_key": DEEPL_AUTH_KEY,
                 "text":      text,
                 "target_lang": target_lang
             }
@@ -91,7 +87,6 @@ def main():
                 else:
                     outfile.write(line)
             else:
-                # Comentarios, líneas vacías, etc.
                 outfile.write(line)
 
     print(f"✔ Traducción completada: {args.output}")
