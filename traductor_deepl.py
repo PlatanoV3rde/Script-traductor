@@ -1,65 +1,100 @@
+#!/usr/bin/env python3
 import re
+import time
 import requests
+import argparse
+import sys
 
-# Tu clave de API de DeepL
-DEEPL_API_KEY = 'tu_clave_api_deepl_aqui'  # ← Reemplázala
-
-# Archivos
-input_file = "messages_en.properties"
-output_file = "messages_es.properties"
-
-# URL de la API
+# ——————————————————————————————
+# Configuración de la API de DeepL
+# ——————————————————————————————
+DEEPL_API_KEY = "TU_CLAVE_DEEPL_AQUÍ"  # ← Reemplázala con tu clave
 DEEPL_API_URL = "https://api-free.deepl.com/v2/translate"
 
-# Regex para separar claves y valores
-line_pattern = re.compile(r"^([^=]+)=(.*)$")
+# ——————————————————————————————
+# Expresiones regulares
+# ——————————————————————————————
+LINE_PATTERN = re.compile(r"^([^=]+)=(.*)$")
+TAG_SPLIT    = re.compile(r"(<[^>]+>)")
 
-# Elimina etiquetas MiniMessage para traducir solo el texto plano
-def extract_plain_text(message):
-    return re.sub(r"<[^>]+>", "", message).strip()
+# ——————————————————————————————
+# Funciones auxiliares
+# ——————————————————————————————
+def extract_plain_text(msg: str) -> str:
+    """Quita etiquetas MiniMessage para enviar solo texto plano a DeepL."""
+    return re.sub(r"<[^>]+>", "", msg).strip()
 
-# Sustituye los textos traducidos respetando el formato original
-def replace_with_translation(original, translated):
-    parts = re.split(r"(<[^>]+>)", original)
-    result = ""
-    trans_index = 0
+def replace_with_translation(original: str, translated: str) -> str:
+    """
+    Reconstruye el valor original, sustituyendo solo el texto plano
+    por su traducción, y dejando intactas todas las etiquetas.
+    """
+    parts  = TAG_SPLIT.split(original)
+    result = []
     for part in parts:
-        if part.startswith("<") and part.endswith(">"):
-            result += part
+        if TAG_SPLIT.fullmatch(part):
+            result.append(part)
         else:
-            if part.strip():
-                result += translated[trans_index]
-                trans_index += 1
-            else:
-                result += part
-    return result
+            # Si hay texto (no solo espacios), usa la traducción
+            result.append(translated if part.strip() else part)
+    return "".join(result)
 
-# Traduce con DeepL
-def translate_deepl(text, target_lang="ES"):
-    response = requests.post(
-        DEEPL_API_URL,
-        data={
-            "auth_key": DEEPL_API_KEY,
-            "text": text,
-            "target_lang": target_lang
-        }
+def translate_deepl(text: str, target_lang="ES", max_retries=5) -> str:
+    """
+    Llama a la API de DeepL con reintentos exponenciales ante 429.
+    """
+    for attempt in range(max_retries):
+        resp = requests.post(
+            DEEPL_API_URL,
+            data={
+                "auth_key": DEEPL_API_KEY,
+                "text":      text,
+                "target_lang": target_lang
+            }
+        )
+        if resp.status_code == 429:
+            wait = 2 ** attempt
+            print(f"[DeepL 429] reintentando en {wait}s… ({attempt+1}/{max_retries})", file=sys.stderr)
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()["translations"][0]["text"]
+    raise RuntimeError("Demasiados 429 consecutivos; abortando traducción.")
+
+# ——————————————————————————————
+# Lógica principal
+# ——————————————————————————————
+def main():
+    p = argparse.ArgumentParser(
+        description="Traduce un .properties (messages_en.properties) a español manteniendo tipografía y etiquetas"
     )
-    response.raise_for_status()
-    return response.json()["translations"][0]["text"]
+    p.add_argument("-i", "--input",  required=True, help="Ruta al archivo .properties original")
+    p.add_argument("-o", "--output", required=True, help="Ruta al archivo .properties traducido")
+    args = p.parse_args()
 
-# Proceso principal
-with open(input_file, 'r', encoding='utf-8') as infile, open(output_file, 'w', encoding='utf-8') as outfile:
-    for line in infile:
-        match = line_pattern.match(line)
-        if match:
-            key, value = match.groups()
-            plain_text = extract_plain_text(value)
-            try:
-                translation = translate_deepl(plain_text)
-                final_value = replace_with_translation(value, [translation])
-                outfile.write(f"{key}={final_value}\n")
-            except Exception as e:
-                print(f"Error en línea: {key} - {e}")
-                outfile.write(f"{key}={value}\n")
-        else:
-            outfile.write(line)
+    with open(args.input, "r", encoding="utf-8") as infile, \
+         open(args.output, "w", encoding="utf-8") as outfile:
+
+        for line in infile:
+            m = LINE_PATTERN.match(line)
+            if m:
+                key, value = m.groups()
+                plain = extract_plain_text(value)
+                if plain:
+                    try:
+                        trans = translate_deepl(plain)
+                        new_val = replace_with_translation(value, trans)
+                        outfile.write(f"{key}={new_val}\n")
+                    except Exception as e:
+                        print(f"[ERROR] {key}: {e}", file=sys.stderr)
+                        outfile.write(line)
+                else:
+                    outfile.write(line)
+            else:
+                # Comentarios, líneas vacías, etc.
+                outfile.write(line)
+
+    print(f"✔ Traducción completada: {args.output}")
+
+if __name__ == "__main__":
+    main()
